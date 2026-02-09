@@ -1,0 +1,10 @@
+This is a test document for the RAG system.
+
+The RAG (Retrieval-Augmented Generation) system combines document retrieval with language model generation to provide accurate, context-aware answers.
+
+Key features:
+- Document indexing from multiple sources
+- Semantic search using embeddings
+- Context-aware question answering
+
+This test document should be indexed and retrievable when you ask questions about RAG systems or document processing.
