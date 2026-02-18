@@ -36,12 +36,28 @@ def ingest_gdrive() -> List[Document]:
 
     This initial version focuses on Google Docs and simple text-like files.
     """
+    import streamlit as st
+    print("Starting Google Drive Ingestion...")
+    st.toast("📂 Starting Google Drive ingestion...")
+    
     root_ids = [fid.strip() for fid in settings.gdrive_root_folder_ids if fid.strip()]
     if not root_ids:
+        msg = "Warning: No Google Drive root folder IDs configured in .env (GDRIVE_ROOT_FOLDER_IDS). Skipping Google Drive."
+        print(msg)
+        st.warning(msg)
         return []
+        
+    print(f"configured folder IDs: {root_ids}")
 
-    service = get_drive_service()
-    files = list_files_in_folders(service, root_ids)
+    try:
+        service = get_drive_service()
+        files = list_files_in_folders(service, root_ids)
+        st.toast(f"📂 Google Drive: Found {len(files)} files found.")
+    except Exception as e:
+        msg = f"Skipping Google Drive ingestion: {e}"
+        print(msg)
+        st.error(f"Google Drive Failed: {e}")
+        return []
 
     documents: List[Document] = []
 
@@ -54,11 +70,37 @@ def ingest_gdrive() -> List[Document]:
 
         if mime_type == "application/vnd.google-apps.document":
             text_content = _export_google_doc_as_text(service, file_id)
+        elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document": # DOCX
+            raw = _download_file_content(service, file_id)
+            import docx
+            from io import BytesIO
+            doc = docx.Document(BytesIO(raw))
+            text_content = "\n".join([p.text for p in doc.paragraphs])
+        elif mime_type == "application/pdf": # PDF
+            try:
+                raw = _download_file_content(service, file_id)
+                import pdfplumber
+                from io import BytesIO
+                with pdfplumber.open(BytesIO(raw)) as pdf:
+                    text_content = "\n".join([(page.extract_text() or "") for page in pdf.pages])
+                
+                print(f"📄 DEBUG: Extracted {len(text_content)} chars from '{name}'. Preview: {text_content[:50].replace('\n', ' ')}...")
+                
+                if not text_content.strip():
+                    st.warning(f"⚠️ Warning: PDF '{name}' seems empty or image-based (no text extracted).")
+            except Exception as e:
+                msg = f"Failed to read PDF '{name}': {e}. Skipping."
+                print(msg)
+                st.error(msg)
+                continue
         elif mime_type in ("text/plain", "text/markdown"):
             raw = _download_file_content(service, file_id)
             text_content = raw.decode("utf-8", errors="ignore")
+        elif mime_type == "application/vnd.google-apps.folder":
+            print(f"Skipping subfolder '{name}' (recursive search not enabled yet). Add this folder ID directly to .env if needed.")
+            continue
         else:
-            # Placeholder: other types (PDF, DOCX) can be added later.
+            print(f"Skipping unsupported file: {name} ({mime_type})")
             continue
 
         metadata = (

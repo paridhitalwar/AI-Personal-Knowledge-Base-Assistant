@@ -1,23 +1,17 @@
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
-
-import chromadb
-from chromadb.utils import embedding_functions
+from typing import Any, Dict, Iterable, List, Optional
+import json
+import numpy as np
 
 from app.config import settings
 from models.document import Chunk, RetrievedChunk
 from vector_store.embeddings import embed_texts
 
-
-class LocalEmbeddingFunction(embedding_functions.EmbeddingFunction):
-    """Adapter to let Chroma call our local embedding model."""
-
-    def __call__(self, texts: Sequence[str]) -> List[List[float]]:  # type: ignore[override]
-        return embed_texts(list(texts))
-
+# NOTE: Switched to a simple JSON-based vector store to resolve stability issues with ChromaDB on Windows.
+# This implementation provides the same interface but uses a local JSON file for storage.
 
 class ChromaStore:
-    """Wrapper around a ChromaDB collection for the personal knowledge base."""
+    """Simple file-based vector store replacing ChromaDB for stability."""
 
     def __init__(
         self,
@@ -26,37 +20,53 @@ class ChromaStore:
     ) -> None:
         self.persist_dir = persist_dir or settings.chroma_persist_dir
         self.collection_name = collection_name or settings.chroma_collection_name
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        self.data_file = self.persist_dir / f"{self.collection_name}.json"
+        
+        self.data: Dict[str, Dict[str, Any]] = {}
+        self._load()
 
-        self.client = chromadb.PersistentClient(path=str(self.persist_dir))
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            embedding_function=LocalEmbeddingFunction(),
-        )
+    def _load(self):
+        if self.data_file.exists():
+            try:
+                with open(self.data_file, 'r', encoding='utf-8') as f:
+                    self.data = json.load(f)
+            except Exception as e:
+                print(f"Warning: Failed to load vector store: {e}. Starting fresh.")
+                self.data = {}
+
+    def _save(self):
+        with open(self.data_file, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f)
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> None:
         """Upsert a batch of chunks into the collection."""
-        ids: List[str] = []
-        documents: List[str] = []
-        metadatas: List[Dict[str, Any]] = []
-
-        for chunk in chunks:
-            ids.append(chunk.id)
-            documents.append(chunk.content)
-            metadatas.append(chunk.metadata)
-
-        if not ids:
+        chunk_list = list(chunks)
+        if not chunk_list:
             return
 
-        # Embeddings are computed via the collection's embedding function.
-        self.collection.upsert(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-        )
+        texts = [c.content for c in chunk_list]
+        embeddings = embed_texts(texts)
+
+        for chunk, embedding in zip(chunk_list, embeddings):
+            self.data[chunk.id] = {
+                "chunk_id": chunk.id, # store ID explicitly in value too
+                "content": chunk.content,
+                "metadata": chunk.metadata,
+                "embedding": embedding
+            }
+        self._save()
 
     def delete_by_document_id(self, document_id: str) -> None:
         """Delete all chunks belonging to a given document."""
-        self.collection.delete(where={"document_id": document_id})
+        keys_to_delete = [
+            k for k, v in self.data.items() 
+            if v["metadata"].get("document_id") == document_id
+        ]
+        if keys_to_delete:
+            for k in keys_to_delete:
+                del self.data[k]
+            self._save()
 
     def query(
         self,
@@ -66,36 +76,53 @@ class ChromaStore:
         where: Optional[Dict[str, Any]] = None,
     ) -> List[RetrievedChunk]:
         """Query the collection with a natural-language text."""
-        if not query_text:
+        if not query_text or not self.data:
             return []
 
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=top_k,
-            where=where if where else None,
-            include=["documents", "metadatas", "distances"],
-        )
+        q_vec = np.array(embed_texts([query_text])[0])
+        q_norm = np.linalg.norm(q_vec)
+        
+        results = []
+        
+        for cid, item in self.data.items():
+            # Check 'where' filter
+            if where:
+                match = True
+                for k, v in where.items():
+                    # Support simple equality
+                    if item["metadata"].get(k) != v:
+                        match = False
+                        break
+                if not match:
+                    continue
 
-        docs = results.get("documents", [[]])[0]
-        metas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+            d_vec = np.array(item["embedding"])
+            d_norm = np.linalg.norm(d_vec)
+            
+            if q_norm == 0 or d_norm == 0:
+                dist = 1.0 # Max distance
+            else:
+                cosine_sim = np.dot(q_vec, d_vec) / (q_norm * d_norm)
+                dist = 1.0 - cosine_sim # Convert similarity (1=good) to distance (0=good)
+            
+            if score_threshold is not None and dist > score_threshold:
+                continue
+                
+            results.append((dist, cid, item))
+
+        # Sort by distance (ascending)
+        results.sort(key=lambda x: x[0])
+        results = results[:top_k]
 
         retrieved: List[RetrievedChunk] = []
-        for doc, meta, dist in zip(docs, metas, distances):
-            if score_threshold is not None and dist is not None and dist > score_threshold:
-                # Chroma uses distance; smaller is better. Threshold is optional.
-                continue
-
-            chunk_id = meta.get("chunk_id") or meta.get("id") or ""
-            score = float(dist) if dist is not None else 0.0
+        for dist, cid, item in results:
             retrieved.append(
                 RetrievedChunk(
-                    id=chunk_id,
-                    content=doc,
-                    metadata=meta,
-                    score=score,
+                    id=cid,
+                    content=item["content"],
+                    metadata=item["metadata"],
+                    score=float(dist),
                 )
             )
 
         return retrieved
-

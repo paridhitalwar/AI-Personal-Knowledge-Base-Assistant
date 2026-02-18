@@ -47,6 +47,7 @@ class RAGPipeline:
     def answer_question(
         self,
         question: str,
+        history: List[dict] = None,
         top_k: Optional[int] = None,
         score_threshold: Optional[float] = None,
     ) -> tuple[str, List[RetrievedChunk]]:
@@ -60,6 +61,25 @@ class RAGPipeline:
         system_prompt = build_system_prompt()
         user_content = build_user_prompt(question, retrieved)
 
-        answer = self.llm.chat(system_prompt=system_prompt, user_content=user_content)
+        try:
+            answer = self.llm.chat(
+                system_prompt=system_prompt, 
+                user_content=user_content,
+                history=history
+            )
+        except TypeError:
+            # Fallback for stale objects: force reload module and re-instantiate
+            import importlib
+            import llm.groq_client
+            importlib.reload(llm.groq_client)
+            from llm.groq_client import GroqClient
+            
+            print("Warning: Stale GroqClient detected. Module reloaded.")
+            self.llm = GroqClient() 
+            answer = self.llm.chat(
+                system_prompt=system_prompt, 
+                user_content=user_content,
+                history=history
+            )
         return answer, retrieved
 

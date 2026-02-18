@@ -15,18 +15,26 @@ class GroqClient:
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
 
-    def chat(self, system_prompt: str, user_content: str) -> str:
+    def chat(self, system_prompt: str, user_content: str, history: List[dict] = None) -> str:
         """Send a chat completion request and return the assistant message content."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        # Add history if provided (excluding system/tool messages if any)
+        if history:
+            # Simple sanitization to ensure only user/assistant roles are passed if needed
+            # For now, just append them.
+            messages.extend(history)
+            
+        messages.append({"role": "user", "content": user_content})
+
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": messages,
             "temperature": 0.2,
         }
 

@@ -40,4 +40,8 @@ def main():
     print(f"Successfully indexed {len(chunks)} chunks from test document")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        traceback.print_exc()

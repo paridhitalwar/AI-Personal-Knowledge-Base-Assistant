@@ -13,35 +13,31 @@ def _get_embedder():
     return None
 
 
+import os
+
+# Force usage of PyTorch and disable TensorFlow to prevent broken DLL imports
+os.environ["USE_TORCH"] = "1"
+os.environ["USE_TF"] = "0"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" # Suppress TF logging
+
+from sentence_transformers import SentenceTransformer
+
+# Load model once
+_model = SentenceTransformer('all-MiniLM-L6-v2')
+
 def embed_texts(texts: List[str]) -> List[List[float]]:
     """
-    Create simple hash-based embeddings for testing.
+    Create embeddings using a real SentenceTransformer model.
     Returns a list of embedding vectors.
     """
     if not texts:
         return []
 
-    embeddings = []
-    for text in texts:
-        # Create a simple 384-dimensional embedding (same as MiniLM)
-        hash_obj = hashlib.sha256(text.encode('utf-8'))
-        hash_hex = hash_obj.hexdigest()
-        
-        # Convert hash to float values
-        embedding = []
-        for i in range(0, len(hash_hex), 2):
-            hex_pair = hash_hex[i:i+2]
-            val = int(hex_pair, 16) / 255.0  # Normalize to 0-1
-            embedding.append(val)
-        
-        # Pad or truncate to 384 dimensions
-        while len(embedding) < 384:
-            embedding.append(0.0)
-        embedding = embedding[:384]
-        
-        embeddings.append(embedding)
-
-    return embeddings
+    # Encode texts
+    embeddings = _model.encode(texts)
+    
+    # Convert numpy arrays to lists for JSON serialization compatibility
+    return embeddings.tolist()
 
 
 def embed_query(text: str) -> List[float]:
