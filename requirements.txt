@@ -1,7 +1,7 @@
 streamlit
 python-dotenv
-chromadb
-fastembed
+# chromadb  <-- Removed to save space/time since we use local JSON store now
+sentence-transformers
 notion-client
 google-api-python-client
 google-auth-httplib2
@@ -12,3 +12,4 @@ requests
 groq
 loguru
 numpy
+torch
